@@ -1,7 +1,9 @@
 import telebot
+import requests
 import os
 import tempfile
 from groq import Groq
+from urllib.parse import quote
 
 TELEGRAM_TOKEN = "8646600794:AAFVUJUIZS5Mq8AHnoBibTMxx0iPRBbuksk"
 GROQ_API_KEY = "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"
@@ -33,13 +35,38 @@ def ask_ai(text):
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.reply_to(message, "Салам! Я AI-помощник. Задай вопрос или отправь документ (PDF, Excel, Word).")
+    bot.reply_to(message, """Салам! Я AI-помощник. 
 
-@bot.message_handler(func=lambda m: True)
-def handle_text(message):
+Команды:
+/image [описание] — сгенерировать изображение
+/start — это сообщение
+
+Или просто задай любой вопрос.""")
+
+@bot.message_handler(commands=["image"])
+def generate_image(message):
+    prompt = message.text.replace("/image", "").strip()
+    if not prompt:
+        bot.reply_to(message, "Напиши описание. Пример:\n/image закат над горами")
+        return
+    
+    bot.reply_to(message, "Генерирую изображение...")
+    
     try:
-        reply = ask_ai(message.text)
-        bot.reply_to(message, reply)
+        encoded = quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
+        response = requests.get(url, timeout=60)
+        
+        if response.status_code == 200:
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+                f.write(response.content)
+                tmp_path = f.name
+            
+            with open(tmp_path, "rb") as photo:
+                bot.send_photo(message.chat.id, photo, caption=f"🎨 {prompt}")
+            os.unlink(tmp_path)
+        else:
+            bot.reply_to(message, "Не удалось сгенерировать. Попробуй ещё раз.")
     except Exception as e:
         bot.reply_to(message, f"Ошибка: {e}")
 
@@ -50,7 +77,6 @@ def handle_document(message):
         file_info = bot.get_file(message.document.file_id)
         downloaded = bot.download_file(file_info.file_path)
         file_name = message.document.file_name.lower()
-
         text = ""
 
         if file_name.endswith(".pdf"):
@@ -85,10 +111,7 @@ def handle_document(message):
                 text += para.text + "\n"
             os.unlink(tmp_path)
 
-        elif file_name.endswith(".csv"):
-            text = downloaded.decode("utf-8", errors="ignore")
-
-        elif file_name.endswith(".txt"):
+        elif file_name.endswith(".csv") or file_name.endswith(".txt"):
             text = downloaded.decode("utf-8", errors="ignore")
 
         else:
@@ -96,7 +119,7 @@ def handle_document(message):
             return
 
         if not text.strip():
-            bot.reply_to(message, "Не удалось извлечь текст из документа.")
+            bot.reply_to(message, "Не удалось извлечь текст.")
             return
 
         prompt = f"Проанализируй этот документ:\n\n{text[:4000]}"
@@ -104,6 +127,14 @@ def handle_document(message):
         bot.reply_to(message, reply)
 
     except Exception as e:
-        bot.reply_to(message, f"Ошибка при чтении документа: {e}")
+        bot.reply_to(message, f"Ошибка: {e}")
+
+@bot.message_handler(func=lambda m: True)
+def handle_text(message):
+    try:
+        reply = ask_ai(message.text)
+        bot.reply_to(message, reply)
+    except Exception as e:
+        bot.reply_to(message, f"Ошибка: {e}")
 
 bot.polling()
