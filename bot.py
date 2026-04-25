@@ -58,36 +58,73 @@ def process_wb_report(chat_id, downloaded):
 
     wb = openpyxl.load_workbook(tmp_path)
     os.unlink(tmp_path)
-
-    if "Поартикульно" not in wb.sheetnames:
-        bot.send_message(chat_id, "❌ Не нашёл лист 'Поартикульно'. Отправь правильный отчёт WB.")
-        return
-
-    ws = wb["Поартикульно"]
+    ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     headers = rows[0]
 
+    # Индексы колонок
     try:
         art_idx = headers.index("Артикул поставщика")
-        sales_idx = headers.index("Продажи, шт")
-        revenue_idx = headers.index("К перечислению")
-        logistics_idx = headers.index("Логистика")
-    except:
-        bot.send_message(chat_id, "❌ Не могу найти нужные колонки в файле.")
+        type_idx = headers.index("Тип документа")
+        revenue_idx = headers.index("К перечислению Продавцу за реализованный Товар")
+        logistics_idx = headers.index("Услуги по доставке товара покупателю")
+        storage_idx = headers.index("Хранение")
+        fine_idx = headers.index("Общая сумма штрафов")
+        qty_idx = headers.index("Кол-во")
+        returns_idx = headers.index("Количество возврата")
+        deliveries_idx = headers.index("Количество доставок")
+    except ValueError as e:
+        bot.send_message(chat_id, f"❌ Не найдена колонка: {e}")
+        return
+
+    # Группировка по артикулам
+    articles = {}
+    for row in rows[1:]:
+        article = row[art_idx]
+        if not article:
+            continue
+        doc_type = row[type_idx] or ""
+
+        if article not in articles:
+            articles[article] = {
+                "sales": 0,
+                "returns": 0,
+                "deliveries": 0,
+                "revenue": 0,
+                "logistics": 0,
+                "storage": 0,
+                "fines": 0,
+            }
+
+        if doc_type == "Продажа":
+            articles[article]["sales"] += row[qty_idx] or 0
+            articles[article]["revenue"] += row[revenue_idx] or 0
+        elif doc_type == "Возврат":
+            articles[article]["returns"] += row[returns_idx] or 0
+            articles[article]["revenue"] += row[revenue_idx] or 0
+
+        articles[article]["logistics"] += row[logistics_idx] or 0
+        articles[article]["storage"] += row[storage_idx] or 0
+        articles[article]["fines"] += row[fine_idx] or 0
+        articles[article]["deliveries"] += row[deliveries_idx] or 0
+
+    if not articles:
+        bot.send_message(chat_id, "❌ Не удалось найти данные в отчёте.")
         return
 
     report = "📊 *ФИНАНСОВЫЙ ОТЧЁТ WB*\n\n"
     missing_costs = []
     total_profit = 0
     total_revenue = 0
+    total_sales = 0
 
-    for row in rows[1:]:
-        article = row[art_idx]
-        if not article:
-            continue
-        sales = row[sales_idx] or 0
-        revenue = row[revenue_idx] or 0
-        logistics = row[logistics_idx] or 0
+    for article, data in articles.items():
+        sales = data["sales"]
+        revenue = data["revenue"]
+        logistics = data["logistics"]
+        storage = data["storage"]
+        fines = data["fines"]
+        returns = data["returns"]
 
         cost = costs.get(str(article))
         if cost is None:
@@ -95,23 +132,30 @@ def process_wb_report(chat_id, downloaded):
             continue
 
         total_cost = cost * sales
-        profit = revenue - total_cost - logistics
+        tax = revenue * 0.02
+        profit = revenue - total_cost - logistics - storage - fines - tax
         margin = (profit / revenue * 100) if revenue > 0 else 0
         roi = (profit / total_cost * 100) if total_cost > 0 else 0
 
         total_profit += profit
         total_revenue += revenue
+        total_sales += sales
 
         report += f"▪️ *{article}*\n"
-        report += f"   Продажи: {int(sales)} шт\n"
+        report += f"   Доставки: {int(data['deliveries'])} | Продажи: {int(sales)} | Возвраты: {int(returns)}\n"
         report += f"   К перечислению: {revenue:,.0f} ₽\n"
         report += f"   Себестоимость: {total_cost:,.0f} ₽\n"
-        report += f"   Прибыль: {profit:,.0f} ₽\n"
-        report += f"   Маржа: {margin:.1f}% | ROI: {roi:.1f}%\n\n"
+        report += f"   Логистика: {logistics:,.0f} ₽\n"
+        report += f"   Хранение: {storage:,.2f} ₽\n"
+        report += f"   Штрафы: {fines:,.0f} ₽\n"
+        report += f"   Налог (2%): {tax:,.0f} ₽\n"
+        report += f"   💰 Прибыль: {profit:,.0f} ₽\n"
+        report += f"   📈 Маржа: {margin:.1f}% | ROI: {roi:.1f}%\n\n"
 
     total_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
     report += f"━━━━━━━━━━━━━━━\n"
     report += f"💰 *ИТОГО*\n"
+    report += f"   Продажи: {int(total_sales)} шт\n"
     report += f"   Выручка: {total_revenue:,.0f} ₽\n"
     report += f"   Прибыль: {total_profit:,.0f} ₽\n"
     report += f"   Маржа: {total_margin:.1f}%\n"
@@ -128,7 +172,7 @@ def process_wb_report(chat_id, downloaded):
 def start(message):
     bot.reply_to(message, """Салам! Я финансовый помощник для WB.
 
-📊 Отправь Excel отчёт — посчитаю прибыль, маржу и ROI
+📊 Отправь Excel отчёт WB — посчитаю прибыль, маржу и ROI
 💰 /cost — добавить или обновить себестоимости
 ❓ Задай любой вопрос про WB""")
 
@@ -138,7 +182,7 @@ def cost_command(message):
     if not costs:
         bot.reply_to(message, """💰 Себестоимости не заданы.
 
-Отправь в формате (каждый артикул с новой строки):
+Отправь в формате:
 артикул: цена
 
 Пример:
