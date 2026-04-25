@@ -23,6 +23,8 @@ SYSTEM_PROMPT = """Ты умный AI-помощник.
 
 Отвечай на русском языке."""
 
+IMAGE_KEYWORDS = ["нарисуй", "сгенерируй картинку", "создай изображение", "нарисовать", "сгенерировать изображение", "draw", "generate image", "create image", "нарисуй мне"]
+
 def ask_ai(text):
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
@@ -33,42 +35,35 @@ def ask_ai(text):
     )
     return response.choices[0].message.content
 
-@bot.message_handler(commands=["start"])
-def start(message):
-    bot.reply_to(message, """Салам! Я AI-помощник. 
-
-Команды:
-/image [описание] — сгенерировать изображение
-/start — это сообщение
-
-Или просто задай любой вопрос.""")
-
-@bot.message_handler(commands=["image"])
-def generate_image(message):
-    prompt = message.text.replace("/image", "").strip()
-    if not prompt:
-        bot.reply_to(message, "Напиши описание. Пример:\n/image закат над горами")
-        return
-    
-    bot.reply_to(message, "Генерирую изображение...")
-    
+def generate_image(chat_id, prompt):
     try:
         encoded = quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true"
         response = requests.get(url, timeout=60)
-        
         if response.status_code == 200:
             with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
                 f.write(response.content)
                 tmp_path = f.name
-            
             with open(tmp_path, "rb") as photo:
-                bot.send_photo(message.chat.id, photo, caption=f"🎨 {prompt}")
+                bot.send_photo(chat_id, photo, caption=f"🎨 {prompt}")
             os.unlink(tmp_path)
         else:
-            bot.reply_to(message, "Не удалось сгенерировать. Попробуй ещё раз.")
+            bot.send_message(chat_id, "Не удалось сгенерировать. Попробуй ещё раз.")
     except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
+        bot.send_message(chat_id, f"Ошибка: {e}")
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.reply_to(message, "Салам! Я AI-помощник.\n\nМогу отвечать на вопросы, генерировать изображения и читать документы.\n\nПросто напиши что нужно!")
+
+@bot.message_handler(commands=["image"])
+def image_command(message):
+    prompt = message.text.replace("/image", "").strip()
+    if not prompt:
+        bot.reply_to(message, "Напиши описание. Пример:\n/image закат над горами")
+        return
+    bot.reply_to(message, "Генерирую изображение...")
+    generate_image(message.chat.id, prompt)
 
 @bot.message_handler(content_types=["document"])
 def handle_document(message):
@@ -115,7 +110,7 @@ def handle_document(message):
             text = downloaded.decode("utf-8", errors="ignore")
 
         else:
-            bot.reply_to(message, "Формат не поддерживается. Отправь PDF, Excel, Word, CSV или TXT.")
+            bot.reply_to(message, "Формат не поддерживается.")
             return
 
         if not text.strip():
@@ -127,14 +122,19 @@ def handle_document(message):
         bot.reply_to(message, reply)
 
     except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
+        bot.reply_to(message, f"Ошибка при чтении документа: {e}")
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(message):
-    try:
-        reply = ask_ai(message.text)
-        bot.reply_to(message, reply)
-    except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
+    text = message.text.lower()
+    if any(kw in text for kw in IMAGE_KEYWORDS):
+        bot.reply_to(message, "Генерирую изображение...")
+        generate_image(message.chat.id, message.text)
+    else:
+        try:
+            reply = ask_ai(message.text)
+            bot.reply_to(message, reply)
+        except Exception as e:
+            bot.reply_to(message, f"Ошибка: {e}")
 
 bot.polling()
